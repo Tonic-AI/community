@@ -1,0 +1,357 @@
+name: CI - Main
+
+on:
+    workflow_dispatch:
+    push:
+         branches:
+             - main
+
+
+concurrency:
+    group: "pages"
+    cancel-in-progress: true
+
+env:
+    REGISTRY: ghcr.io
+    IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+    alter:
+        runs-on: ubuntu-latest
+        name: File Alterations
+        if: github.repository == 'kbve/kbve'
+        outputs:
+            herbmail:  ${{ steps.delta.outputs.herbmail_any_changed  }}
+            kbve: ${{ steps.delta.outputs.kbve_all_changed_files }}
+            rareicon: ${{ steps.delta.outputs.rareicon_all_changed_files }}
+            discordsh: ${{ steps.delta.outputs.discordsh_all_changed_files }}
+            atlas: ${{ steps.delta.outputs.atlas_any_changed  }}
+            api: ${{ steps.delta.outputs.api_any_changed  }}
+            proxy: ${{ steps.delta.outputs.proxy_any_changed  }}
+            saber: ${{ steps.delta.outputs.saber_any_changed  }}
+            rustprofile:  ${{ steps.delta.outputs.rustprofile_any_changed  }}
+            erust:  ${{ steps.delta.outputs.erust_any_changed  }}
+
+        steps:
+            -   name: Checkout the repository using git
+                uses: actions/checkout@v4
+                with:
+                    fetch-depth: 1
+
+            -   name: File Changes
+                id: delta
+                uses: tj-actions/changed-files@v39
+                with:
+                  files_yaml: |
+                    herbmail:
+                        - 'apps/herbmail.com/**'
+                    kbve:
+                        - 'apps/kbve.com/**'
+                    rareicon:
+                        - 'apps/rareicon.com/**'
+                    discordsh:
+                        - 'apps/discord.sh/**'
+                    atlas:
+                        - 'apps/atlas/kbve_atlas/**'
+                    api:
+                        - 'apps/api/**'
+                    proxy:
+                        - 'apps/proxy/**'
+                    saber:
+                        - 'apps/saber/**'
+                    rustprofile:
+                        - 'apps/rust_api_profile/**'
+                    erust:
+                        - 'packages/erust/src/**'
+
+
+    deploy:
+        needs: ["alter"]
+        name: Deployment
+        runs-on: ubuntu-latest
+        steps:
+            -   name: Checkout the repository using git
+                uses: actions/checkout@v4
+
+            -   name: Setup Node v18
+                uses: actions/setup-node@v3
+                with:
+                    node-version: 18
+
+            -   name: Setup pnpm
+                uses: pnpm/action-setup@v2
+                with:
+                    version: 8
+                    run_install: false
+            #   @[CACHE]->[START]
+            -   name: Get pnpm Store
+                shell: bash
+                run: |
+                    echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+            -   name: Setup pnpm Cache
+                uses: actions/cache@v3
+                with:
+                    path: ${{ env.STORE_PATH }}
+                    key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+                    restore-keys: |
+                        ${{ runner.os }}-pnpm-store-
+
+            #   @[CACHE]->[END]
+
+            -   name: Install pnpm dependencies
+                run: pnpm install
+
+            -   name: Generate NX Report
+                shell: bash
+                run: |
+                    pnpm nx report
+
+            #   [HerbMail]
+
+            -   name: HerbMail -> Build
+                if: needs.alter.outputs.herbmail == 'true'
+                shell: bash
+                run: |
+                    pnpm nx build herbmail.com
+
+            -   name: HerbMail -> Deployment
+                if: needs.alter.outputs.herbmail == 'true'
+                uses: dobbelina/copy_file_to_another_repo_action@main
+                env:
+                    API_TOKEN_GITHUB: ${{ secrets.UNITY_PAT }}
+                with:
+                    source_file: 'dist/apps/herbmail.com/'
+                    destination_repo: 'kbve/herbmail.com'
+                    destination_folder: '/docs'
+                    destination_branch: 'main'
+                    destination_branch_create: 'patch-herbmail-deploy'
+                    user_email: '5599058+h0lybyte@users.noreply.github.com'
+                    user_name: 'h0lybyte'
+                    commit_message: ${{ github.event.head_commit.message }}
+                    rsync_option: "-avrh --delete"
+
+
+
+            #   [ATLAS]
+
+            -   name: Python Install
+                if: needs.alter.outputs.atlas == 'true'
+                uses: actions/setup-python@v4
+                with:
+                  python-version: "3.x"
+
+            -   name: Poetry Install
+                if: needs.alter.outputs.atlas == 'true'
+                uses: snok/install-poetry@v1
+
+            -   name: Atlas Build
+                if: needs.alter.outputs.atlas == 'true'
+                shell: bash
+                run: |
+                    pnpm nx build atlas
+
+            -   name: Store the Atlas distribution packages
+                if: needs.alter.outputs.atlas== 'true'
+                uses: actions/upload-artifact@v3
+                with:
+                    name: atlas-python-package-distributions
+                    path: apps/atlas/dist/
+
+
+    erustpublish:
+        needs: ["deploy", "alter"]
+        name: Erust Cargo Publish
+        if: needs.alter.outputs.erust == 'true'
+        runs-on: 'ubuntu-latest'
+        permissions:
+            id-token: write
+            contents: write
+            packages: write
+            issues: write
+            pull-requests: write
+        steps:
+            -   name: Checkout repository
+                uses: actions/checkout@v4
+            
+            -   name: Rust ToolChain
+                uses: dtolnay/rust-toolchain@stable
+
+            -   name: Cargo Login
+                run: cargo login ${{ secrets.CRATES_TOKEN }}
+
+            -   name: Cargo Release
+                run: |-
+                    cargo publish \
+                        -p erust
+
+            -   name: KBVE Shell
+                uses: ./.github/actions/kbve-shell
+                with:
+                    flag: '-cargobump erust'
+                    create_pull_request: true
+                    github_token: ${{ secrets.GITHUB_TOKEN }}
+                    pull_request_title: 'erust-minor-version-bump'
+                    pull_request_body: 'Bumping up the minor version of the erust package.'
+
+
+    pypublish:
+        needs: ["deploy", "alter"]
+        name: Pypi Publish
+        if: needs.alter.outputs.atlas == 'true'
+        runs-on: ubuntu-latest
+        environment:
+            name: pypi
+            url: https://pypi.org/p/kbve
+        permissions:
+            id-token: write
+        steps:
+            -   name: Download all the dists
+                uses: actions/download-artifact@v3
+                with:
+                    name: atlas-python-package-distributions
+                    path: dist/
+            -   name: Publish distribution 📦 to PyPI
+                uses: pypa/gh-action-pypi-publish@release/v1
+                with:
+                    user: __token__
+                    password: ${{ secrets.PYPI_API_TOKEN }}
+
+    # Monorepo Image from https://docs.github.com/en/actions/publishing-packages/publishing-docker-images#publishing-images-to-github-packages
+    monorepo-image:
+        needs: ["deploy"]
+        name: Build Monorepo Docker Image
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+        steps:
+              - name: Checkout Repository
+                uses: actions/checkout@v4
+
+              - name: Set up QEMU
+                uses: docker/setup-qemu-action@v3
+
+              - name: Set up Docker Buildx
+                uses: docker/setup-buildx-action@v3
+
+              - name: Login to Docker Hub
+                uses: docker/login-action@v3
+                with:
+                  username: ${{ secrets.DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+              - name: Log in to the Container registry
+                uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+                with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+              - name: Extract metadata (tags, labels) for Docker
+                id: meta
+                uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+                with:
+                    images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+              - name: Build and push Docker image
+                uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+                with:
+                      context: .
+                      platforms: linux/amd64, linux/arm64
+                      push: true
+                      tags: ${{ steps.meta.outputs.tags }}
+                      labels: ${{ steps.meta.outputs.labels }}
+                      cache-from: type=gha
+                      cache-to: type=gha,mode=max
+
+    # Rust Profile Image Deployment
+    rust-profile-image:
+        needs: ["monorepo-image", "alter"]
+        name: Build Rust Profile Docker Image
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+        steps:
+              - name: Checkout Repository
+                uses: actions/checkout@v4
+
+              - name: Set up QEMU
+                uses: docker/setup-qemu-action@v3
+
+              - name: Set up Docker Buildx
+                uses: docker/setup-buildx-action@v3
+
+              - name: Login to Docker Hub
+                uses: docker/login-action@v3
+                with:
+                  username: ${{ secrets.DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+              - name: Build and push
+                uses: docker/build-push-action@v5
+                with:
+                    context: ./apps/rust_api_profile/
+                    push: true
+                    tags: kbve/rustprofile:latest
+                    platforms: linux/amd64, linux/arm64
+                    #platforms: linux/amd64
+                    file: ./apps/rust_api_profile/Dockerfile
+                    cache-from: type=gha
+                    cache-to: type=gha,mode=max
+                    #cache-from: type=registry,ref=kbve/rustprofile:buildcache
+                    #cache-to: type=registry,ref=kbve/rustprofile:buildcache,mode=max
+
+    # Deploy Rust Profile Image
+    deploy-rust-profile-image:
+         needs: ["rust-profile-image", "alter"]
+         name: Deploy Rust Profile Docker Image to Portainer
+         runs-on: ubuntu-latest
+         steps:
+             -  name: Checkout Repository
+                uses: actions/checkout@v4
+
+             -  name: Deploy to Portainer
+                uses: ./.github/actions/shieldwall-command-center
+                with:
+                    token: ${{ secrets.KBVE_PAT }}
+                    command: "deploy"
+                    kbve-shield-token: ${{ secrets.SHIELDWALL }}
+
+    # Chisel Deployment
+    chisel-rust-profile-image:
+          needs: ["rust-profile-image", "alter", "deploy-rust-profile-image"]
+          name: Chisel Rust Profile Docker Image
+          runs-on: ubuntu-latest
+          permissions:
+              contents: read
+              packages: write
+          steps:
+              - name: Checkout Repository
+                uses: actions/checkout@v4
+
+              - name: Set up QEMU
+                uses: docker/setup-qemu-action@v3
+
+              - name: Set up Docker Buildx
+                uses: docker/setup-buildx-action@v3
+
+              - name: Login to Docker Hub
+                uses: docker/login-action@v3
+                with:
+                  username: ${{ secrets.DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+              - name: Build and push
+                uses: docker/build-push-action@v5
+                with:
+                    context: ./migrations/docker/chisel/rust-profile-api/
+                    push: true
+                    tags: kbve/rustprofilechisel:latest
+                    #platforms: linux/amd64, linux/arm64
+                    platforms: linux/amd64
+                    file: ./migrations/docker/chisel/rust-profile-api/Dockerfile
+                    cache-from: type=gha
+                    cache-to: type=gha,mode=max
+
