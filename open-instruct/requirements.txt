@@ -22,7 +22,7 @@ tiktoken
 rouge_score
 tensorboard
 wandb
-gradio==3.50.2
+gradio==4.11.0
 termcolor
 jsonlines
 unidic-lite
