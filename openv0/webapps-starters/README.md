@@ -1,1 +1,0 @@
-starter templates for different frameworks, with component libraries preinstalled
