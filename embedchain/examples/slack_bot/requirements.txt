@@ -1,1 +1,0 @@
-embedchain[slack, poe]==0.1.7
