@@ -1,7 +1,0 @@
-{
-  "import": {
-    "react": "lucide-react",
-    "next": "lucide-react",
-    "svelte": "lucide-svelte"
-  }
-}
