@@ -1,3 +1,0 @@
-# atlas
-
-Project description here.
