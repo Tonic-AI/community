@@ -1,0 +1,37 @@
+metadata:
+  name: vision-transfer-learning
+
+proxy: nil
+workflow: 
+  ref: v1.0.1
+  repo: https://github.com/intel/vision-based-transfer-learning-and-inference
+  dataset_dir: /data
+  platform: None
+  precision: FP32
+  script: colorectal
+  batch_size: 32
+  num_epochs: 100
+
+dataset:
+  type: s3
+  logsKey: nil
+  s3:
+    datasetKey: resisc45
+  nfs:
+    readOnly: true
+    server: nil
+    path: nil
+
+sidecars:
+  image: ubuntu:20.04
+
+volumeClaimTemplates: 
+  workspace:
+    resources:
+      requests:
+        storage: 2Gi
+  output_dir:
+    resources:
+      requests:
+        storage: 4Gi
+ 
